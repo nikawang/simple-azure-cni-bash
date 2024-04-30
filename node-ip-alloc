@@ -1,0 +1,305 @@
+#!/bin/bash -e
+
+if [[ ${DEBUG} -gt 0 ]]; then set -x; fi
+
+exec 3>&1 # make stdout available as fd 3 for the result
+exec &>> /var/log/node-ip-alloc-plugin.log
+
+echo "CNI node-ip-alloc stars: $(date) "
+echo "CNI command: $CNI_COMMAND"
+echo "CNI ARGS: $CNI_ARGS"
+
+stdin=`cat /dev/stdin`
+echo "stdin: $stdin"
+
+# check if jq installed
+if [ ! -x "/bin/jq" ]; then
+    echo "jq does not exist or is not executable"
+    exit 1
+fi
+
+# check which az cli installed and working
+if [ ! -x "/bin/az" ]; then
+    echo "/bin/az does not exist or is not executable"
+    exit 1
+fi
+
+# 定义一个排他锁防止脚本并发执行
+lockfile=/var/run/node-ip-alloc-lockfile
+
+# 打开锁文件并获取文件描述符
+exec 200>$lockfile
+
+# 确保在脚本退出时释放锁
+trap "exec 200>&-; exit" INT TERM EXIT
+
+# 等待获取排他锁
+flock -x 200 || {
+    echo "Waiting for lock..."
+    flock -x 200
+}
+
+# 定义环境变量文件路径
+ENV_FILE="/etc/kubernetes/centos-k8s-cluster.env"
+
+# 检查文件是否存在
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Environment file $ENV_FILE does not exist"
+    exit 1
+fi
+
+# 从文件中读取环境变量
+source $ENV_FILE
+
+# 定义一个函数来检查环境变量是否为空
+check_env() {
+    if [ -z "${!1}" ]; then
+        echo "Environment variable $1 is empty"
+        exit 1
+    fi
+}
+
+# 检查环境变量
+check_env "NODE_NIC_NAME"
+check_env "NODE_RG_NAME"
+
+# 如果所有环境变量都不为空，打印成功消息
+echo "All environment variables are set"
+
+get_ip_config_name() {
+    local cni_args=$1
+    local ip_config_name=""
+
+    # 取pod name和pod namespace
+    local pod_name=${cni_args#*K8S_POD_NAME=}
+    pod_name=${pod_name%%;*}
+    local pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
+    pod_namespace=${pod_namespace%%;*}
+
+    # 检查pod name和pod namespace是否为空
+    if [ -z "$pod_name" ] || [ -z "$pod_namespace" ]; then
+        echo "Pod name or namespace is empty"
+        return 1
+    fi
+
+    # 构造ip-config name
+    ip_config_name="${pod_name}.${pod_namespace}"
+
+    echo "$ip_config_name"
+}
+
+
+ensure_netns() {
+    local netns_id=$1
+    if [ -z "$netns_id" ]; then
+        echo "Error: netns ID is required"
+        return 1
+    fi
+
+    if ! ip netns list | grep -q "^${netns_id}\$"; then
+        echo "Creating netns: $netns_id"
+        ip netns add "$netns_id"
+        if [ $? -eq 0 ]; then
+            echo "Created netns: $netns_id"
+        else
+            echo "Failed to create netns: $netns_id"
+            return 1
+        fi
+    else
+        echo "Netns $netns_id already exists"
+    fi
+}
+
+manage-node-ip() {
+    operation=$1
+    ip_config_name=$2
+
+    # 检查操作类型和ip-config name是否为空
+    if [ -z "$operation" ] || [ -z "$ip_config_name" ]; then
+        echo "Operation or IP config name is empty"
+        exit 1
+    fi
+
+    echo "node-ip-alloc: $operation node ip config for $ip_config_name"
+
+    # 根据操作类型执行相应的命令
+    if [ "$operation" == "create" ]; then
+        result=$(/bin/az network nic ip-config create -g $NODE_RG_NAME --nic-name $NODE_NIC_NAME --name $ip_config_name -o json)
+        if [ $? -ne 0 ]; then
+            echo "az create node ip failed"
+            exit 1
+        fi
+
+        echo "az create node ip succeeded"
+
+        ip_address=$(echo $result | jq -r '.privateIpAddress')
+
+        #check whether ip address format is correct
+        if [[ ! $ip_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid ip address: $ip_address"
+            exit 1
+        fi
+        
+        echo "Assigned IP：$ip_address for $ip_config_name " 
+
+    elif [ "$operation" == "delete" ]; then
+        /bin/az network nic ip-config delete -g $NODE_RG_NAME --nic-name $NODE_NIC_NAME --name $ip_config_name
+        if [ $? -ne 0 ]; then
+            echo "az delete node ip failed"
+            exit 1
+        fi
+        echo "az delete node ip succeeded"
+    else
+        echo "Invalid operation: $operation"
+        exit 1
+    fi
+}
+
+# 尝试获取访问令牌
+access_token_info=$(az account get-access-token 2>/dev/null)
+
+# 检查是否成功获取到访问令牌
+if [ $? -ne 0 ]; then
+    # 如果没有获取到访问令牌，执行登录操作
+    az login -i
+else
+    # 如果已经获取到访问令牌，检查令牌是否已经过期
+    expires_on=$(echo $access_token_info | jq -r '.expiresOn')
+    expires_on_timestamp=$(date -d"$expires_on" +%s)
+    current_timestamp=$(date +%s)
+    if [ $current_timestamp -gt $expires_on_timestamp ]; then
+        # 如果令牌已经过期，执行登录操作
+        az login -i
+    else
+        # 如果令牌没有过期，打印访问令牌
+        access_token=$(echo $access_token_info | jq -r '.accessToken')
+        echo "Already logged in, access token: *****"
+    fi
+fi
+
+case $CNI_COMMAND in
+ADD)
+
+#get the right ip config name from $CNI_ARGS
+ip_config_name=$(get_ip_config_name "$CNI_ARGS")
+if [ $? -ne 0 ]; then
+    echo "Failed to get ip config name"
+    exit 1
+fi
+
+#allocate node ip 并返回ip地址到变量
+manage-node-ip create $ip_config_name
+if [ $? -ne 0 ]; then
+    echo "Failed to allocate node ip"
+    exit 1
+fi
+
+#get subnet mask bit , gateway and dns
+mask_bit=17
+gateway_ip=10.128.0.1
+dns_ip=8.8.8.8
+
+#获取容器的网络命名空间
+CNI_NETNS_NAME=$(basename $CNI_NETNS)
+ensure_netns $CNI_NETNS_NAME
+
+# 创建veth pair
+rand="$(tr -dc 'a-f0-9' < /dev/urandom | head -c8)"
+hostif="azv${rand}"
+containerif="azr${rand}"
+
+
+#创建一个veth pair，一个端口连接到容器的网络命名空间，另一个端口连接到主机
+ip link add $hostif type veth peer name $containerif
+ip link set $hostif up 
+ip link set dev $hostif mtu 1500
+sysctl -w net.ipv6.conf.$hostif.accept_ra=0
+
+# 将容器端口加入到容器的网络命名空间，容器内名称为eth0
+ip link set $containerif netns $CNI_NETNS name eth0
+
+# 添加一条路由，让vm可以访问容器ip
+ip route add $ip_address/32 dev $hostif
+
+# enable proxy_arp
+echo 1 > /proc/sys/net/ipv4/conf/$hostif/proxy_arp
+
+# 配置容器端口的IP地址，网关，路由，DNS等
+ip netns exec $CNI_NETNS_NAME ip link set eth0 up
+ip netns exec $CNI_NETNS_NAME sysctl -w net.ipv6.conf.eth0.accept_ra=0
+ip netns exec $CNI_NETNS_NAME ip addr add $ip_address/$mask_bit dev eth0
+
+# 返回CNI配置
+result=$(cat <<EOF
+{
+    "cniVersion": "0.3.1",
+    "interfaces": [
+        {
+            "name": "eth0",
+            "mac": "$(ip netns exec $CNI_NETNS_NAME cat /sys/class/net/eth0/address)"
+        }
+    ],
+    "ips": [
+        {
+            "version": "4",
+            "address": "$(ip netns exec $CNI_NETNS_NAME ip addr show eth0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)/$mask_bit"
+        }
+    ],
+    "routes": [
+        {
+            "dst": "0.0.0.0/0",
+            "gw": "$gateway_ip"
+        }
+    ],
+    "dns": {
+        "nameservers": ["$dns_ip"]
+    }
+}
+EOF
+)
+echo $result >&3
+
+;;
+
+DEL)
+
+#get the right ip config name from $CNI_ARGS
+ip_config_name=$(get_ip_config_name "$CNI_ARGS")
+if [ $? -ne 0 ]; then
+    echo "Failed to get ip config name"
+    exit 1
+fi
+
+#let'd don't do any ifconfig delete here
+manage-node-ip delete $ip_config_name
+if [ $? -ne 0 ]; then
+    echo "Failed to delete ip config: $ip_config_name"
+    exit 1
+fi
+
+;;
+
+GET)
+	echo "GET not supported"
+	exit 1
+;;
+
+VERSION)
+echo '{
+  "cniVersion": "0.3.1",
+  "supportedVersions": [ "0.3.0", "0.3.1", "0.4.0" ]
+}' >&3
+;;
+
+*)
+  echo "Unknown cni commandn: $CNI_COMMAND"
+  exit 1
+;;
+
+esac
+
+# 释放锁并退出
+exec 200>&-
+trap - INT TERM EXIT
+exit 0
+
