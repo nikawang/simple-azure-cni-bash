@@ -22,17 +22,17 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
 
     - conflist file:  upload to /etc/cni/net.d
    
-```
-     {
-   "cniVersion":"0.3.0",
-   "name":"azure",
-   "plugins":[
+      ```
       {
-         "type": "node-ip-alloc"
+        "cniVersion":"0.3.0",
+        "name":"azure",
+        "plugins":[
+          {
+            "type": "node-ip-alloc"
+          }
+        ]
       }
-   ]
-}
-```
+      ```
    - env file:       upload to /etc/kubernetes:  we might not need this env file later on since we can get all profile from az or using api.
 4. to assign static ip to pod, you just need to annotate your pod with following:
    ```yaml
