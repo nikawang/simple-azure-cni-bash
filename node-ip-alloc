@@ -208,6 +208,7 @@ fi
 mask_bit=17
 gateway_ip=10.0.128.1
 dns_ip=10.96.0.10
+subnet_cidr=10.0.128.0/17
 
 #获取容器的网络命名空间
 CNI_NETNS_NAME=$(basename $CNI_NETNS)
@@ -234,16 +235,21 @@ ip route add $ip_address/32 dev $hostif
 # enable proxy_arp
 echo 1 > /proc/sys/net/ipv4/conf/$hostif/proxy_arp
 
-# 配置容器端口的IP地址，网关，路由，DNS等
+# 配置容器端口的IP地址
 ip netns exec $CNI_NETNS_NAME ip link set eth0 up
 ip netns exec $CNI_NETNS_NAME sysctl -w net.ipv6.conf.eth0.accept_ra=0
 ip netns exec $CNI_NETNS_NAME ip addr add $ip_address/$mask_bit dev eth0
-ip netns exec $CNI_NETNS_NAME ip route add default via $gateway_ip dev eth0
+
+#模拟 Azure VNET transparent mode 过程设置容器eth0
+ip netns exec $CNI_NETNS_NAME ip route del $subnet_cidr dev eth0
+ip netns exec $CNI_NETNS_NAME ip route add 169.254.1.1/32 dev eth0
+ip netns exec $CNI_NETNS_NAME ip route add default via 169.254.1.1 dev eth0
+ip netns exec $CNI_NETNS_NAME arp -s 169.254.1.1 aa:aa:aa:aa:aa:aa
 
 # 返回CNI配置
 result=$(cat <<EOF
 {
-    "cniVersion": "0.3.1",
+    "cniVersion": "0.3.0",
     "interfaces": [
         {
             "name": "eth0",
@@ -261,10 +267,7 @@ result=$(cat <<EOF
             "dst": "0.0.0.0/0",
             "gw": "$gateway_ip"
         }
-    ],
-    "dns": {
-        "nameservers": ["$dns_ip"]
-    }
+    ]
 }
 EOF
 )
