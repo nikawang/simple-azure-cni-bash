@@ -222,6 +222,7 @@ containerif="azr${rand}"
 
 #创建一个veth pair，一个端口连接到容器的网络命名空间，另一个端口连接到主机
 ip link add $hostif type veth peer name $containerif
+ip link set $hostif address aa:aa:aa:aa:aa:aa
 ip link set $hostif up 
 ip link set dev $hostif mtu 1500
 sysctl -w net.ipv6.conf.$hostif.accept_ra=0
