@@ -206,7 +206,7 @@ fi
 
 #get subnet mask bit , gateway and dns
 mask_bit=17
-gateway_ip=10.128.0.1
+gateway_ip=10.0.128.1
 dns_ip=8.8.8.8
 
 #获取容器的网络命名空间
