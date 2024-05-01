@@ -248,8 +248,8 @@ if [ $? -ne 0 ]; then
 fi
 
 # 获取CRICTL POD ID
-local crictl_pod_id=${CNI_ARGS#*K8S_POD_INFRA_CONTAINER_ID=}
-crictl_pod_id=${K8S_POD_INFRA_CONTAINER_ID%%;*}
+crictl_pod_id=${CNI_ARGS#*K8S_POD_INFRA_CONTAINER_ID=}
+crictl_pod_id=${crictl_pod_id%%;*}
 
 # 获取pod的静态IP地址注解
 get_pod_static_ip_annotation $crictl_pod_id
