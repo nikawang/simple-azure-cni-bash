@@ -4,6 +4,6 @@
    "plugins":[
       {
          "type": "node-ip-alloc"
-      },
+      }
    ]
 }
