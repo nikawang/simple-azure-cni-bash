@@ -7,7 +7,7 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
 1. to dynamically creates a new ip-config for your Pod, without pre-assigned to VM (Azure VNET CNI is doing this way, but waste a lot of IPs)
    since IP-CONFIG will be created during CNI ADD , this will take much longger time for POD coming up.
    we can not run multiple CNI ADD at same time. so we have to lock and create ip-config one by one,  this even slower when create multiple Pod at same node
-2. (TODO) there is a chance I can assign fixed IP when create new ip-config and assign static IP to a pod (by a annotation, just like calico does.)
+2.  assign fixed IP when create new ip-config and assign static IP to a pod (by a annotation, just like calico does.)
 3. maybe other....
 
 ## how to use:
@@ -18,4 +18,7 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
    - node-ip-alloc:  wget https://raw.githubusercontent.com/hydracz/simple-azure-cni-bash/main/node-ip-alloc -O /opt/cni/bin/node-ip-alloc
    - conflist file:  upload to /etc/cni/net.d
    - env file:       upload to /etc/kubernetes:  we might not need this env file later on since we can get all profile from az or using api.
-
+4. to assign static ip to pod, you just need to annotate your pod with following:
+   annotations:
+     node-ip-alloc-ipv4-address: 10.0.0.0
+     node-ip-alloc-method: static
