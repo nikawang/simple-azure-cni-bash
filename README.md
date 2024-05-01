@@ -19,6 +19,8 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
    - conflist file:  upload to /etc/cni/net.d
    - env file:       upload to /etc/kubernetes:  we might not need this env file later on since we can get all profile from az or using api.
 4. to assign static ip to pod, you just need to annotate your pod with following:
+   ```
    annotations:
      node-ip-alloc-ipv4-address: 10.0.0.0
      node-ip-alloc-method: static
+   ```
