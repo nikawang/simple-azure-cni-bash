@@ -24,15 +24,9 @@ if [ ! -x "/bin/az" ]; then
     exit 1
 fi
 
-# check if crictl installed and working
-if [ ! -x "/bin/crictl" ]; then
-    echo "/bin/crictl does not exist or is not executable"
-    exit 1
-fi
-
-# check if ipcalc installed and working
-if [ ! -x "/bin/ipcalc" ]; then
-    echo "/bin/ipcalc does not exist or is not executable"
+# check if kubectl installed and working
+if [ ! -x "/bin/kubectl" ]; then
+    echo "/bin/kubectl does not exist or is not executable"
     exit 1
 fi
 
@@ -83,9 +77,9 @@ get_ip_config_name() {
     local ip_config_name=""
 
     # 取pod name和pod namespace
-    local pod_name=${cni_args#*K8S_POD_NAME=}
+    pod_name=${cni_args#*K8S_POD_NAME=}
     pod_name=${pod_name%%;*}
-    local pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
+    pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
     pod_namespace=${pod_namespace%%;*}
 
     # 检查pod name和pod namespace是否为空
@@ -174,19 +168,25 @@ manage-node-ip() {
     fi
 }
 
-# 获取pod的静态IP地址注解
+# 更具ip config name获取pod的静态IP地址注解
 get_pod_static_ip_annotation() {
-    if [ $# -ne 1 ]; then
-        echo "Usage: get_pod_static_ip_annotation <pod_id>"
+    if [ $# -ne 2 ]; then
+        echo "Usage: get_pod_static_ip_annotation <kubeconfig_path> <ip_config_name>"
         return 1
     fi
 
-    local pod_id=$1
-    local pod_info=$(crictl inspectp $pod_id)
+    local kubeconfig_path=$1
+    local ip_config_name=$2
 
-    local node_ip_alloc_method=$(echo $pod_info | jq -r '.status.annotations."node-ip-alloc-method"')
+    # 分割ip_config_name为pod_name和namespace
+    local pod_name=${ip_config_name%%.*}
+    local namespace=${ip_config_name#*.}
+
+    local pod_info=$(kubectl --kubeconfig=$kubeconfig_path -n $namespace get pod $pod_name -o json)
+
+    local node_ip_alloc_method=$(echo $pod_info | jq -r '.metadata.annotations."node-ip-alloc-method"')
     if [ "$node_ip_alloc_method" == "static" ]; then
-        ip_address=$(echo $pod_info | jq -r '.status.annotations."node-ip-alloc-ipv4-address"')
+        ip_address=$(echo $pod_info | jq -r '.metadata.annotations."node-ip-alloc-ipv4-address"')
 
         # 校验IP地址的格式
         if [[ $ip_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -239,6 +239,7 @@ mask_bit=17
 gateway_ip=10.0.128.1
 dns_ip=10.96.0.10
 subnet_cidr=10.0.128.0/17
+kubeconffile="/etc/kubernetes/kubelet.conf"
 
 #get the right ip config name from $CNI_ARGS
 ip_config_name=$(get_ip_config_name "$CNI_ARGS")
@@ -247,12 +248,12 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 获取CRICTL POD ID
-crictl_pod_id=${CNI_ARGS#*K8S_POD_INFRA_CONTAINER_ID=}
-crictl_pod_id=${crictl_pod_id%%;*}
-
 # 获取pod的静态IP地址注解
-get_pod_static_ip_annotation $crictl_pod_id
+ip_address=$(get_pod_static_ip_annotation $kubeconffile $ip_config_name)
+if [ $? -ne 0 ]; then
+    echo "Failed to get pod static ip annotation"
+    exit 1
+fi
 
 echo "got ip_address: $ip_address from pod annotation, if it is empty, will allocate a dynamic one from subnet"
 
