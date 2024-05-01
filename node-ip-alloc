@@ -166,6 +166,9 @@ else
     # 如果已经获取到访问令牌，检查令牌是否已经过期
     expires_on=$(echo $access_token_info | jq -r '.expiresOn')
     expires_on_timestamp=$(date -d"$expires_on" +%s)
+      
+    # 将过期时间戳减少10800秒，即提前3小时强制renew
+    expires_on_timestamp=$((expires_on_timestamp - 10800))
     current_timestamp=$(date +%s)
     if [ $current_timestamp -gt $expires_on_timestamp ]; then
         # 如果令牌已经过期，执行登录操作
