@@ -15,11 +15,14 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
 1. your Azure VM should enable Managed Identify and assign network contributor role to that this identity,
 2. make sure jq and azure-cli are installed
 3. install this CNI
-   - node-ip-alloc:  wget https://raw.githubusercontent.com/hydracz/simple-azure-cni-bash/main/node-ip-alloc -O /opt/cni/bin/node-ip-alloc
+   - node-ip-alloc:
+     ```bash
+     wget https://raw.githubusercontent.com/hydracz/simple-azure-cni-bash/main/node-ip-alloc -O /opt/cni/bin/node-ip-alloc
+     ```
    - conflist file:  upload to /etc/cni/net.d
    - env file:       upload to /etc/kubernetes:  we might not need this env file later on since we can get all profile from az or using api.
 4. to assign static ip to pod, you just need to annotate your pod with following:
-   ```
+   ```yaml
    annotations:
      node-ip-alloc-ipv4-address: 10.0.0.0
      node-ip-alloc-method: static
