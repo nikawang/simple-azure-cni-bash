@@ -155,28 +155,35 @@ manage-node-ip() {
     fi
 }
 
-# 尝试获取访问令牌
-access_token_info=$(az account get-access-token 2>/dev/null)
+# 尝试获取访问令牌如果失败，执行az login -i重新登录
+access_token_info=$(az account get-access-token 2>/dev/null || az login -i )
 
 # 检查是否成功获取到访问令牌
-if [ $? -ne 0 ]; then
-    # 如果没有获取到访问令牌，执行登录操作
+if [ $? -ne 0 ] || [ -z "$access_token_info" ]; then
+    # 如果没有获取到访问令牌，或者访问令牌信息为空，执行登录操作
     az login -i
 else
     # 如果已经获取到访问令牌，检查令牌是否已经过期
-    expires_on=$(echo $access_token_info | jq -r '.expiresOn')
-    expires_on_timestamp=$(date -d"$expires_on" +%s)
-      
-    # 将过期时间戳减少10800秒，即提前3小时强制renew
-    expires_on_timestamp=$((expires_on_timestamp - 10800))
-    current_timestamp=$(date +%s)
-    if [ $current_timestamp -gt $expires_on_timestamp ]; then
-        # 如果令牌已经过期，执行登录操作
+    access_token=$(echo $access_token_info | jq -r '.accessToken')
+
+    # 检查access_token是否为空
+    if [ -z "$access_token" ]; then
+        # 如果access_token为空，执行登录操作
         az login -i
     else
-        # 如果令牌没有过期，打印访问令牌
-        access_token=$(echo $access_token_info | jq -r '.accessToken')
-        echo "Already logged in, access token: *****"
+        expires_on=$(echo $access_token_info | jq -r '.expiresOn')
+        expires_on_timestamp=$(date -d"$expires_on" +%s)
+
+        # 将过期时间戳减少10800秒，即提前3小时强制renew
+        expires_on_timestamp=$((expires_on_timestamp - 10800))
+        current_timestamp=$(date +%s)
+        if [ $current_timestamp -gt $expires_on_timestamp ]; then
+            # 如果令牌已经过期，执行登录操作
+            az login -i
+        else
+            # 如果令牌没有过期，打印访问令牌
+            echo "Already logged in, access token: ${access_token:0:10}...${access_token: -10}"
+        fi
     fi
 fi
 
