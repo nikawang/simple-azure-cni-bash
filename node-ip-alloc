@@ -68,6 +68,7 @@ check_env() {
 # 检查环境变量
 check_env "NODE_NIC_NAME"
 check_env "NODE_RG_NAME"
+check_env "NODE_SUBNET_CIDR"
 
 # 如果所有环境变量都不为空，打印成功消息
 echo "All environment variables are set"
@@ -252,11 +253,9 @@ fi
 case $CNI_COMMAND in
 ADD)
 
-#get subnet mask bit , gateway and dns
-mask_bit=17
-gateway_ip=10.0.128.1
-dns_ip=10.96.0.10
-subnet_cidr=10.0.128.0/17
+#handle subnet_cidr
+subnet_cidr=$NODE_SUBNET_CIDR
+mask_bit=${subnet_cidr#*/}
 kubeconffile=$( echo $stdin | get_kubeletconf )
 
 #get the right ip config name from $CNI_ARGS
@@ -325,6 +324,8 @@ ip netns exec $CNI_NETNS_NAME ip route add 169.254.1.1/32 dev eth0
 ip netns exec $CNI_NETNS_NAME ip route add default via 169.254.1.1 dev eth0
 ip netns exec $CNI_NETNS_NAME arp -s 169.254.1.1 aa:aa:aa:aa:aa:aa
 
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Finished CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
+
 # 返回CNI配置
 result=$(cat <<EOF
 {
@@ -344,7 +345,7 @@ result=$(cat <<EOF
     "routes": [
         {
             "dst": "0.0.0.0/0",
-            "gw": "$gateway_ip"
+            "gw": "169.254.1.1"
         }
     ]
 }
@@ -369,6 +370,8 @@ if [ $? -ne 0 ]; then
     echo "Failed to delete ip config: $ip_config_name"
     exit 1
 fi
+
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Finished CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 ;;
 
