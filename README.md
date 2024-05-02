@@ -14,6 +14,14 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
 
 1. your Azure VM should enable Managed Identify and assign network contributor role to that this identity,
 2. make sure jq / kubelet / azure-cli are installed
+   - jq:
+     ```bash
+     yum install -y epel-release
+     yum install -y jq
+     ```
+   - azure-cli:
+     [azure-cli-installation](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux?pivots=dnf)，
+   
 3. install this CNI
    - node-ip-alloc:
      ```bash
