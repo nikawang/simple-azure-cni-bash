@@ -37,7 +37,15 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
         ]
       }
       ```
-   - env file:       upload to /etc/kubernetes:  we might not need this env file later on since we can get all profile from az or using api.
+   - prepare env file:  upload to /etc/kubernetes/centos-k8s-cluster.env: currently 3 madatory ENV has to be present for this CNI to allocate ip-config and ips.  different node will have different settings.  I'm currently using a terraform per node template to generate this env..
+  
+      ```json
+      # cat /etc/kubernetes/centos-k8s-cluster.env
+      export NODE_NIC_NAME="k8s-master-0-nic"
+      export NODE_SUBNET_CIDR="10.0.0.0/17"
+      export NODE_RG_NAME="rg-centos-k8s-southeastasia"
+      ```
+
 4. to assign static ip to pod, you just need to annotate your pod with following:
    ```yaml
    annotations:
