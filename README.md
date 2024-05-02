@@ -21,14 +21,18 @@ I got lots of idea from [s-matyukevich](https://github.com/s-matyukevich/bash-cn
      ```
 
     - conflist file:  upload to /etc/cni/net.d
-   
-      ```
+     ```
+      wget https://raw.githubusercontent.com/hydracz/simple-azure-cni-bash/main/09-cni.conflist -O /etc/cni/net.d/10-azure.conflist
+     ```
+
+     ```json
       {
         "cniVersion":"0.3.0",
         "name":"azure",
         "plugins":[
           {
-            "type": "node-ip-alloc"
+            "type": "node-ip-alloc",
+            "kubeletconf":"/etc/kubernetes/kubelet.conf"
           }
         ]
       }

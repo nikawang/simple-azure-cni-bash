@@ -5,7 +5,7 @@ if [[ ${DEBUG} -gt 0 ]]; then set -x; fi
 exec 3>&1 # make stdout available as fd 3 for the result
 exec &>> /var/log/node-ip-alloc-plugin.log
 
-echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") GOT CNI command: $CNI_COMMAND WITH ARGS: $CNI_ARGS"
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") GOT CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 stdin=`cat /dev/stdin`
 echo "stdin: $stdin"
@@ -43,7 +43,7 @@ flock -x 200 || {
     flock -x 200
 }
 
-echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Processing CNI command: $CNI_COMMAND WITH ARGS: $CNI_ARGS"
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Processing CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 # 定义环境变量文件路径
 ENV_FILE="/etc/kubernetes/centos-k8s-cluster.env"
@@ -73,7 +73,7 @@ check_env "NODE_RG_NAME"
 echo "All environment variables are set"
 
 # 定义一个函数来获取kubelet配置文件路径
-get_kubeletconf {
+function get_kubeletconf {
   local kubeletconf=$(jq -r '.kubeletconf' < /dev/stdin)
   if [[ -z "$kubeletconf" ]]; then
     echo "Error: kubeletconf is empty" >&2
@@ -83,7 +83,7 @@ get_kubeletconf {
 }
 
 
-get_ip_config_name() {
+function get_ip_config_name() {
     local cni_args=$1
     local ip_config_name=""
 
@@ -106,7 +106,7 @@ get_ip_config_name() {
 }
 
 
-ensure_netns() {
+function ensure_netns() {
     local netns_id=$1
     if [ -z "$netns_id" ]; then
         echo "Error: netns ID is required"
@@ -127,7 +127,7 @@ ensure_netns() {
     fi
 }
 
-manage-node-ip() {
+function manage-node-ip() {
     operation=$1
     ip_config_name=$2
     ip_address=$3
@@ -180,7 +180,7 @@ manage-node-ip() {
 }
 
 # 更具ip config name获取pod的静态IP地址注解
-get_pod_static_ip_annotation() {
+function get_pod_static_ip_annotation() {
     if [ $# -ne 2 ]; then
         echo "Usage: get_pod_static_ip_annotation <kubeconfig_path> <ip_config_name>"
         return 1
@@ -250,7 +250,7 @@ mask_bit=17
 gateway_ip=10.0.128.1
 dns_ip=10.96.0.10
 subnet_cidr=10.0.128.0/17
-kubeconffile=$( echo $stdin |get_kubeletconf )
+kubeconffile=$( echo $stdin | get_kubeletconf )
 
 #get the right ip config name from $CNI_ARGS
 ip_config_name=$(get_ip_config_name "$CNI_ARGS")
