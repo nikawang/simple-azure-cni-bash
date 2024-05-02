@@ -88,19 +88,24 @@ function get_ip_config_name() {
     local ip_config_name=""
 
     # 取pod name和pod namespace
-    pod_name=${cni_args#*K8S_POD_NAME=}
+    local pod_name=${cni_args#*K8S_POD_NAME=}
     pod_name=${pod_name%%;*}
-    pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
+    local pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
     pod_namespace=${pod_namespace%%;*}
 
-    # 检查pod name和pod namespace是否为空
-    if [ -z "$pod_name" ] || [ -z "$pod_namespace" ]; then
-        echo "Pod name or namespace is empty"
+    # 取K8S_POD_INFRA_CONTAINER_ID的前16位
+    local pod_infra_container_id=${cni_args#*K8S_POD_INFRA_CONTAINER_ID=}
+    local pod_infra_container_id=${pod_infra_container_id%%;*}
+    pod_infra_container_id=${pod_infra_container_id:0:16}
+
+    # 检查pod name、pod namespace和pod_infra_container_id是否为空
+    if [ -z "$pod_name" ] || [ -z "$pod_namespace" ] || [ -z "$pod_infra_container_id" ]; then
+        echo "Pod name, namespace or infra container id is empty"
         return 1
     fi
 
     # 构造ip-config name
-    ip_config_name="${pod_name}.${pod_namespace}"
+    ip_config_name="${pod_name}.${pod_namespace}.${pod_infra_container_id}"
 
     echo "$ip_config_name"
 }
@@ -189,9 +194,11 @@ function get_pod_static_ip_annotation() {
     local kubeconfig_path=$1
     local ip_config_name=$2
 
-    # 分割ip_config_name为pod_name和namespace
+    # 分割ip_config_name为pod_name、namespace和pod_infra_container_id
     local pod_name=${ip_config_name%%.*}
-    local namespace=${ip_config_name#*.}
+    local temp=${ip_config_name#*.}
+    local namespace=${temp%%.*}
+    local pod_infra_container_id=${temp#*.}
 
     local pod_info=$(kubectl --kubeconfig=$kubeconfig_path -n $namespace get pod $pod_name -o json)
 
