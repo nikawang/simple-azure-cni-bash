@@ -5,9 +5,7 @@ if [[ ${DEBUG} -gt 0 ]]; then set -x; fi
 exec 3>&1 # make stdout available as fd 3 for the result
 exec &>> /var/log/node-ip-alloc-plugin.log
 
-echo "CNI node-ip-alloc stars: $(date) "
-echo "CNI command: $CNI_COMMAND"
-echo "CNI ARGS: $CNI_ARGS"
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") GOT CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 stdin=`cat /dev/stdin`
 echo "stdin: $stdin"
@@ -18,9 +16,15 @@ if [ ! -x "/bin/jq" ]; then
     exit 1
 fi
 
-# check which az cli installed and working
+# check if az cli installed and working
 if [ ! -x "/bin/az" ]; then
     echo "/bin/az does not exist or is not executable"
+    exit 1
+fi
+
+# check if kubectl installed and working
+if [ ! -x "/bin/kubectl" ]; then
+    echo "/bin/kubectl does not exist or is not executable"
     exit 1
 fi
 
@@ -38,6 +42,8 @@ flock -x 200 || {
     echo "Waiting for lock..."
     flock -x 200
 }
+
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Processing CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 # 定义环境变量文件路径
 ENV_FILE="/etc/kubernetes/centos-k8s-cluster.env"
@@ -62,11 +68,23 @@ check_env() {
 # 检查环境变量
 check_env "NODE_NIC_NAME"
 check_env "NODE_RG_NAME"
+check_env "NODE_SUBNET_CIDR"
 
 # 如果所有环境变量都不为空，打印成功消息
 echo "All environment variables are set"
 
-get_ip_config_name() {
+# 定义一个函数来获取kubelet配置文件路径
+function get_kubeletconf {
+  local kubeletconf=$(jq -r '.kubeletconf' < /dev/stdin)
+  if [[ -z "$kubeletconf" ]]; then
+    echo "Error: kubeletconf is empty" >&2
+    return 1
+  fi
+  echo $kubeletconf
+}
+
+
+function get_ip_config_name() {
     local cni_args=$1
     local ip_config_name=""
 
@@ -76,20 +94,25 @@ get_ip_config_name() {
     local pod_namespace=${cni_args#*K8S_POD_NAMESPACE=}
     pod_namespace=${pod_namespace%%;*}
 
-    # 检查pod name和pod namespace是否为空
-    if [ -z "$pod_name" ] || [ -z "$pod_namespace" ]; then
-        echo "Pod name or namespace is empty"
+    # 取K8S_POD_INFRA_CONTAINER_ID的前16位
+    local pod_infra_container_id=${cni_args#*K8S_POD_INFRA_CONTAINER_ID=}
+    local pod_infra_container_id=${pod_infra_container_id%%;*}
+    pod_infra_container_id=${pod_infra_container_id:0:16}
+
+    # 检查pod name、pod namespace和pod_infra_container_id是否为空
+    if [ -z "$pod_name" ] || [ -z "$pod_namespace" ] || [ -z "$pod_infra_container_id" ]; then
+        echo "Pod name, namespace or infra container id is empty"
         return 1
     fi
 
     # 构造ip-config name
-    ip_config_name="${pod_name}.${pod_namespace}"
+    ip_config_name="${pod_name}.${pod_namespace}.${pod_infra_container_id}"
 
     echo "$ip_config_name"
 }
 
 
-ensure_netns() {
+function ensure_netns() {
     local netns_id=$1
     if [ -z "$netns_id" ]; then
         echo "Error: netns ID is required"
@@ -110,9 +133,10 @@ ensure_netns() {
     fi
 }
 
-manage-node-ip() {
+function manage-node-ip() {
     operation=$1
     ip_config_name=$2
+    ip_address=$3
 
     # 检查操作类型和ip-config name是否为空
     if [ -z "$operation" ] || [ -z "$ip_config_name" ]; then
@@ -124,7 +148,13 @@ manage-node-ip() {
 
     # 根据操作类型执行相应的命令
     if [ "$operation" == "create" ]; then
-        result=$(/bin/az network nic ip-config create -g $NODE_RG_NAME --nic-name $NODE_NIC_NAME --name $ip_config_name -o json)
+        # 根据ip_address是否有值来决定是否添加--private-ip-address选项
+        if [ -n "$ip_address" ]; then
+            result=$(/bin/az network nic ip-config create -g $NODE_RG_NAME --nic-name $NODE_NIC_NAME --name $ip_config_name --private-ip-address $ip_address -o json)
+        else
+            result=$(/bin/az network nic ip-config create -g $NODE_RG_NAME --nic-name $NODE_NIC_NAME --name $ip_config_name -o json)
+        fi
+
         if [ $? -ne 0 ]; then
             echo "az create node ip failed"
             exit 1
@@ -155,30 +185,78 @@ manage-node-ip() {
     fi
 }
 
-# 尝试获取访问令牌
-access_token_info=$(az account get-access-token 2>/dev/null)
+# 更具ip config name获取pod的静态IP地址注解
+function get_pod_static_ip_annotation() {
+    if [ $# -ne 2 ]; then
+        echo "Usage: get_pod_static_ip_annotation <kubeconfig_path> <ip_config_name>"
+        return 1
+    fi
+
+    local kubeconfig_path=$1
+    local ip_config_name=$2
+
+    # 分割ip_config_name为pod_name、namespace和pod_infra_container_id
+    local pod_name=${ip_config_name%%.*}
+    local temp=${ip_config_name#*.}
+    local namespace=${temp%%.*}
+    local pod_infra_container_id=${temp#*.}
+
+    local pod_info=$(kubectl --kubeconfig=$kubeconfig_path -n $namespace get pod $pod_name -o json)
+
+    local node_ip_alloc_method=$(echo $pod_info | jq -r '.metadata.annotations."node-ip-alloc-method"')
+    if [ "$node_ip_alloc_method" == "static" ]; then
+        ip_address=$(echo $pod_info | jq -r '.metadata.annotations."node-ip-alloc-ipv4-address"')
+
+        # 校验IP地址的格式
+        if [[ $ip_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo $ip_address
+            return 0
+        else
+            echo "Invalid IP address format: $ip_address"
+            return 1
+        fi
+    fi
+}
+
+# 尝试获取访问令牌如果失败，执行az login -i重新登录
+access_token_info=$(az account get-access-token 2>/dev/null || az login -i )
 
 # 检查是否成功获取到访问令牌
-if [ $? -ne 0 ]; then
-    # 如果没有获取到访问令牌，执行登录操作
+if [ $? -ne 0 ] || [ -z "$access_token_info" ]; then
+    # 如果没有获取到访问令牌，或者访问令牌信息为空，执行登录操作
     az login -i
 else
     # 如果已经获取到访问令牌，检查令牌是否已经过期
-    expires_on=$(echo $access_token_info | jq -r '.expiresOn')
-    expires_on_timestamp=$(date -d"$expires_on" +%s)
-    current_timestamp=$(date +%s)
-    if [ $current_timestamp -gt $expires_on_timestamp ]; then
-        # 如果令牌已经过期，执行登录操作
+    access_token=$(echo $access_token_info | jq -r '.accessToken')
+
+    # 检查access_token是否为空
+    if [ -z "$access_token" ]; then
+        # 如果access_token为空，执行登录操作
         az login -i
     else
-        # 如果令牌没有过期，打印访问令牌
-        access_token=$(echo $access_token_info | jq -r '.accessToken')
-        echo "Already logged in, access token: *****"
+        expires_on=$(echo $access_token_info | jq -r '.expiresOn')
+        expires_on_timestamp=$(date -d"$expires_on" +%s)
+
+        # 将过期时间戳减少10800秒，即提前3小时强制renew
+        expires_on_timestamp=$((expires_on_timestamp - 10800))
+        current_timestamp=$(date +%s)
+        if [ $current_timestamp -gt $expires_on_timestamp ]; then
+            # 如果令牌已经过期，执行登录操作
+            az login -i
+        else
+            # 如果令牌没有过期，打印访问令牌
+            echo "Already logged in, access token: ${access_token:0:10}...${access_token: -10}"
+        fi
     fi
 fi
 
 case $CNI_COMMAND in
 ADD)
+
+#handle subnet_cidr
+subnet_cidr=$NODE_SUBNET_CIDR
+mask_bit=${subnet_cidr#*/}
+kubeconffile=$( echo $stdin | get_kubeletconf )
 
 #get the right ip config name from $CNI_ARGS
 ip_config_name=$(get_ip_config_name "$CNI_ARGS")
@@ -187,17 +265,27 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-#allocate node ip 并返回ip地址到变量
-manage-node-ip create $ip_config_name
+# 获取pod的静态IP地址注解
+ip_address=$(get_pod_static_ip_annotation $kubeconffile $ip_config_name)
+if [ $? -ne 0 ]; then
+    echo "Failed to get pod static ip annotation"
+    exit 1
+fi
+
+echo "got ip_address: $ip_address from pod annotation, if it is empty, will allocate a dynamic one from subnet"
+
+# 检查ip_address是否有值
+if [ -n "$ip_address" ]; then
+    manage-node-ip create $ip_config_name $ip_address
+else
+    manage-node-ip create $ip_config_name
+fi
+
 if [ $? -ne 0 ]; then
     echo "Failed to allocate node ip"
     exit 1
 fi
 
-#get subnet mask bit , gateway and dns
-mask_bit=17
-gateway_ip=10.128.0.1
-dns_ip=8.8.8.8
 
 #获取容器的网络命名空间
 CNI_NETNS_NAME=$(basename $CNI_NETNS)
@@ -211,6 +299,7 @@ containerif="azr${rand}"
 
 #创建一个veth pair，一个端口连接到容器的网络命名空间，另一个端口连接到主机
 ip link add $hostif type veth peer name $containerif
+ip link set $hostif address aa:aa:aa:aa:aa:aa
 ip link set $hostif up 
 ip link set dev $hostif mtu 1500
 sysctl -w net.ipv6.conf.$hostif.accept_ra=0
@@ -224,15 +313,23 @@ ip route add $ip_address/32 dev $hostif
 # enable proxy_arp
 echo 1 > /proc/sys/net/ipv4/conf/$hostif/proxy_arp
 
-# 配置容器端口的IP地址，网关，路由，DNS等
+# 配置容器端口的IP地址
 ip netns exec $CNI_NETNS_NAME ip link set eth0 up
 ip netns exec $CNI_NETNS_NAME sysctl -w net.ipv6.conf.eth0.accept_ra=0
 ip netns exec $CNI_NETNS_NAME ip addr add $ip_address/$mask_bit dev eth0
 
+#模拟 Azure VNET transparent mode 过程设置容器eth0
+ip netns exec $CNI_NETNS_NAME ip route del $subnet_cidr dev eth0
+ip netns exec $CNI_NETNS_NAME ip route add 169.254.1.1/32 dev eth0
+ip netns exec $CNI_NETNS_NAME ip route add default via 169.254.1.1 dev eth0
+ip netns exec $CNI_NETNS_NAME arp -s 169.254.1.1 aa:aa:aa:aa:aa:aa
+
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Finished CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
+
 # 返回CNI配置
 result=$(cat <<EOF
 {
-    "cniVersion": "0.3.1",
+    "cniVersion": "0.3.0",
     "interfaces": [
         {
             "name": "eth0",
@@ -248,12 +345,9 @@ result=$(cat <<EOF
     "routes": [
         {
             "dst": "0.0.0.0/0",
-            "gw": "$gateway_ip"
+            "gw": "169.254.1.1"
         }
-    ],
-    "dns": {
-        "nameservers": ["$dns_ip"]
-    }
+    ]
 }
 EOF
 )
@@ -276,6 +370,8 @@ if [ $? -ne 0 ]; then
     echo "Failed to delete ip config: $ip_config_name"
     exit 1
 fi
+
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") Finished CNI command: $CNI_COMMAND , WITH ARGS: $CNI_ARGS"
 
 ;;
 

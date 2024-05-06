@@ -3,7 +3,8 @@
    "name":"azure",
    "plugins":[
       {
-         "type": "node-ip-alloc"
-      },
+         "type": "node-ip-alloc",
+         "kubeletconf":"/etc/kubernetes/kubelet.conf"
+      }
    ]
 }
